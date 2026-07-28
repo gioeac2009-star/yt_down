@@ -15,7 +15,7 @@ except Exception:
 
 from yt_dlp import YoutubeDL
 
-# Configurações padrão para contornar bloqueios do YouTube (HTTP 403 Forbidden) em IPs da Nuvem (Cloud Datacenters)
+# Configurações padrão para contornar bloqueios do YouTube (HTTP 403 e verificação de Bot) em IPs da Nuvem
 COMMON_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -28,14 +28,13 @@ COMMON_YDL_OPTS = {
     }
 }
 
-# Lista de clientes do player do YouTube para tentar em caso de erro 403
+# Clientes do player do YouTube ordenados estrategicamente (iOS e Android contornam bot-check de áudio)
 CLIENT_FALLBACKS = [
+    ['ios', 'android'],
     ['android', 'ios'],
     ['mweb', 'android'],
-    ['ios'],
-    ['android'],
-    ['web'],
-    ['tv_embedded']
+    ['tv_embedded'],
+    ['web']
 ]
 
 
@@ -358,7 +357,6 @@ if get_btn and url:
         info = None
         last_error = None
         
-        # Tentativas com diferentes clientes de player para evitar HTTP 403 Forbidden
         for client_types in CLIENT_FALLBACKS:
             ydl_opts = dict(COMMON_YDL_OPTS)
             ydl_opts['extractor_args'] = {'youtube': {'player_client': client_types}}
@@ -432,8 +430,10 @@ if st.session_state['info']:
                 fmt_id = chosen['format_id']
                 acodec = chosen.get('codecs')
                 
+                # Para extração de Áudio (WAV): se o stream direto de áudio for bloqueado por anti-bot,
+                # o sistema automaticamente tenta baixar o vídeo e extrair o áudio de alta qualidade via FFmpeg!
                 if download_type == 'Apenas Áudio (WAV)':
-                    format_option = 'bestaudio/best'
+                    format_candidates = ['bestaudio/best', fmt_id, 'best']
                     merge_format = 'wav'
                     post_processors = [{
                         'key': 'FFmpegExtractAudio',
@@ -442,9 +442,10 @@ if st.session_state['info']:
                     }]
                     mime_type = "audio/wav"
                 else:
-                    format_option = fmt_id
                     if 'a:' not in (acodec or '') and ('+' not in fmt_id):
-                        format_option = f"{fmt_id}+bestaudio/best"
+                        format_candidates = [f"{fmt_id}+bestaudio/best", fmt_id, 'best']
+                    else:
+                        format_candidates = [fmt_id, 'best']
                     merge_format = 'mp4'
                     post_processors = []
                     mime_type = "video/mp4"
@@ -469,7 +470,7 @@ if st.session_state['info']:
                             )
                         elif status_key == 'finished':
                             progress_bar.progress(100)
-                            status_text.caption('✨ Download concluído no servidor! Preparando arquivo para seu dispositivo...')
+                            status_text.caption('✨ Processamento concluído! Preparando arquivo...')
                         elif status_key == 'error':
                             status_text.error('Erro durante o download.')
                     return hook
@@ -480,39 +481,43 @@ if st.session_state['info']:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     out_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
                     
-                    # Sistema de retentativa inteligente com fallbacks contra HTTP 403 Forbidden do YouTube
-                    for client_types in CLIENT_FALLBACKS:
-                        ydl_opts = {
-                            'format': format_option,
-                            'outtmpl': out_template,
-                            'progress_hooks': [make_hook()],
-                            'noplaylist': True,
-                            'prefer_ffmpeg': True,
-                            'merge_output_format': merge_format,
-                            'postprocessors': post_processors,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'geo_bypass': True,
-                            'nocheckcertificate': True,
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': client_types
-                                }
-                            },
-                            'http_headers': COMMON_YDL_OPTS['http_headers']
-                        }
-
-                        try:
-                            with YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([url])
-                            download_success = True
+                    # Estratégia de Fallback Dupla: (1) Formatos -> (2) Clientes de Player (iOS/Android/mweb/tv)
+                    for fmt_opt in format_candidates:
+                        if download_success:
                             break
-                        except Exception as e:
-                            last_error_msg = str(e)
-                            if '403' in last_error_msg or 'Forbidden' in last_error_msg:
-                                continue
-                            else:
+                        for client_types in CLIENT_FALLBACKS:
+                            ydl_opts = {
+                                'format': fmt_opt,
+                                'outtmpl': out_template,
+                                'progress_hooks': [make_hook()],
+                                'noplaylist': True,
+                                'prefer_ffmpeg': True,
+                                'merge_output_format': merge_format,
+                                'postprocessors': post_processors,
+                                'quiet': True,
+                                'no_warnings': True,
+                                'geo_bypass': True,
+                                'nocheckcertificate': True,
+                                'extractor_args': {
+                                    'youtube': {
+                                        'player_client': client_types
+                                    }
+                                },
+                                'http_headers': COMMON_YDL_OPTS['http_headers']
+                            }
+
+                            try:
+                                with YoutubeDL(ydl_opts) as ydl:
+                                    ydl.download([url])
+                                download_success = True
                                 break
+                            except Exception as e:
+                                last_error_msg = str(e)
+                                # Se for bloqueio anti-bot ou 403, avança para a próxima combinação
+                                if any(k in last_error_msg for k in ['403', 'Forbidden', 'bot', 'Sign in', 'confirm', 'PO Token']):
+                                    continue
+                                else:
+                                    break
 
                     if download_success:
                         downloaded_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
