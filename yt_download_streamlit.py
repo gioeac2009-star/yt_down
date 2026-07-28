@@ -15,7 +15,7 @@ except Exception:
 
 from yt_dlp import YoutubeDL
 
-# Configurações padrão para contornar bloqueios do YouTube (HTTP 403 e verificação de Bot) em IPs da Nuvem
+# Configurações padrão para contornar bloqueios do YouTube em IPs da Nuvem (Streamlit Cloud)
 COMMON_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -28,7 +28,7 @@ COMMON_YDL_OPTS = {
     }
 }
 
-# Clientes do player do YouTube ordenados estrategicamente (iOS e Android contornam bot-check de áudio)
+# Lista de clientes do player do YouTube para contornar bloqueios de bots e formatos ausentes
 CLIENT_FALLBACKS = [
     ['ios', 'android'],
     ['android', 'ios'],
@@ -120,6 +120,7 @@ def list_formats(info):
         rows.append({
             'format_id': e['id'],
             'label': e['label'],
+            'height': e['height'],
             'ext': e['ext'].upper(),
             'codecs': codec_str,
             'size': size_str,
@@ -429,11 +430,15 @@ if st.session_state['info']:
                 st.session_state['file_data'] = None
                 fmt_id = chosen['format_id']
                 acodec = chosen.get('codecs')
+                target_height = chosen.get('height') or 0
                 
-                # Para extração de Áudio (WAV): se o stream direto de áudio for bloqueado por anti-bot,
-                # o sistema automaticamente tenta baixar o vídeo e extrair o áudio de alta qualidade via FFmpeg!
                 if download_type == 'Apenas Áudio (WAV)':
-                    format_candidates = ['bestaudio/best', fmt_id, 'best']
+                    format_candidates = [
+                        'bestaudio/best',
+                        'ba/b',
+                        f'bestvideo[height<={target_height}]+bestaudio/best' if target_height else 'best',
+                        'best'
+                    ]
                     merge_format = 'wav'
                     post_processors = [{
                         'key': 'FFmpegExtractAudio',
@@ -442,10 +447,12 @@ if st.session_state['info']:
                     }]
                     mime_type = "audio/wav"
                 else:
-                    if 'a:' not in (acodec or '') and ('+' not in fmt_id):
-                        format_candidates = [f"{fmt_id}+bestaudio/best", fmt_id, 'best']
-                    else:
-                        format_candidates = [fmt_id, 'best']
+                    format_candidates = [
+                        fmt_id,
+                        f'bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]/best' if target_height else 'best',
+                        f'best[height<={target_height}]' if target_height else 'best',
+                        'best'
+                    ]
                     merge_format = 'mp4'
                     post_processors = []
                     mime_type = "video/mp4"
@@ -481,7 +488,6 @@ if st.session_state['info']:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     out_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
                     
-                    # Estratégia de Fallback Dupla: (1) Formatos -> (2) Clientes de Player (iOS/Android/mweb/tv)
                     for fmt_opt in format_candidates:
                         if download_success:
                             break
@@ -513,11 +519,7 @@ if st.session_state['info']:
                                 break
                             except Exception as e:
                                 last_error_msg = str(e)
-                                # Se for bloqueio anti-bot ou 403, avança para a próxima combinação
-                                if any(k in last_error_msg for k in ['403', 'Forbidden', 'bot', 'Sign in', 'confirm', 'PO Token']):
-                                    continue
-                                else:
-                                    break
+                                continue
 
                     if download_success:
                         downloaded_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
