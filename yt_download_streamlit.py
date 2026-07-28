@@ -15,6 +15,29 @@ except Exception:
 
 from yt_dlp import YoutubeDL
 
+# Configurações padrão para contornar bloqueios do YouTube (HTTP 403 Forbidden) em IPs da Nuvem (Cloud Datacenters)
+COMMON_YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'geo_bypass': True,
+    'nocheckcertificate': True,
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+}
+
+# Lista de clientes do player do YouTube para tentar em caso de erro 403
+CLIENT_FALLBACKS = [
+    ['android', 'ios'],
+    ['mweb', 'android'],
+    ['ios'],
+    ['android'],
+    ['web'],
+    ['tv_embedded']
+]
+
 
 def human_size(bytes_num):
     if bytes_num is None:
@@ -113,7 +136,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Estilização Apple Minimalist (SF Pro, cantos arredondados suavizados, paleta limpa, botões visíveis)
+# Estilização Apple Minimalist
 st.markdown("""
 <style>
 @import url('https://fonts.cdnfonts.com/css/sf-pro-display-cdn');
@@ -163,7 +186,7 @@ header[data-testid="stHeader"] {
     font-weight: 400;
 }
 
-/* Estilizar apenas os containers principais com borda como Cartões Apple */
+/* Estilizar os containers principais como Cartões Apple */
 [data-testid="stMainBlockContainer"] [data-testid="stVerticalBlockBorderWrapper"] {
     background-color: var(--apple-card-bg) !important;
     border-radius: var(--apple-radius) !important;
@@ -173,7 +196,7 @@ header[data-testid="stHeader"] {
     margin-bottom: 20px !important;
 }
 
-/* Garantir que colunas internas não dupliquem bordas ou fundos */
+/* Garantir que colunas internas não dupliquem bordas */
 [data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"],
 [data-testid="stColumn"] {
     background-color: transparent !important;
@@ -182,14 +205,14 @@ header[data-testid="stHeader"] {
     padding: 0 !important;
 }
 
-/* Estilização de rótulos dos inputs */
+/* Rótulos dos inputs */
 div[data-testid="stMarkdownContainer"] p, label, .stWidgetLabel p {
     color: var(--apple-text-primary) !important;
     font-weight: 500 !important;
     font-size: 0.95rem !important;
 }
 
-/* Inputs de texto estilo Apple */
+/* Inputs de texto */
 div[data-baseweb="input"] {
     border-radius: 12px !important;
     border: 1px solid rgba(0, 0, 0, 0.12) !important;
@@ -206,7 +229,7 @@ div[data-baseweb="input"] input {
     font-size: 0.95rem !important;
 }
 
-/* Dropdown / Selectbox estilo Apple */
+/* Dropdown / Selectbox */
 div[data-baseweb="select"] > div {
     border-radius: 12px !important;
     background-color: #F5F5F7 !important;
@@ -214,12 +237,12 @@ div[data-baseweb="select"] > div {
     color: var(--apple-text-primary) !important;
 }
 
-/* Radio buttons estilo Apple */
+/* Radio buttons */
 div[role="radiogroup"] {
     gap: 16px;
 }
 
-/* CORREÇÃO DEFINITIVA DE LEGIBILIDADE DOS BOTÕES NO STREAMLIT */
+/* BOTÕES ESTILIZADOS COM TEXTO BRANCO GARANTIDO */
 div[data-testid="stButton"] > button,
 button[data-baseweb="button"],
 .stButton > button {
@@ -246,7 +269,6 @@ div[data-testid="stButton"] > button:active,
     transform: translateY(0);
 }
 
-/* Força TODOS os elementos internos do botão a ficarem BRANCOS */
 div[data-testid="stButton"] > button *,
 button[data-baseweb="button"] *,
 .stButton > button *,
@@ -283,7 +305,7 @@ button[data-baseweb="button"] *,
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
-/* Custom progress bar styling */
+/* Barra de progresso personalizada */
 .stProgress > div > div > div > div {
     background-color: var(--apple-blue) !important;
     border-radius: 10px !important;
@@ -333,14 +355,27 @@ if get_btn and url:
         st.session_state['file_data'] = None
         
     with st.spinner('Obtendo detalhes do vídeo...'):
-        ydl_opts = {'quiet': True, 'no_warnings': True}
-        try:
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                st.session_state['info'] = info
-                st.session_state['formats'] = list_formats(info)
-        except Exception as e:
-            st.error(f"Não foi possível carregar as informações: {e}")
+        info = None
+        last_error = None
+        
+        # Tentativas com diferentes clientes de player para evitar HTTP 403 Forbidden
+        for client_types in CLIENT_FALLBACKS:
+            ydl_opts = dict(COMMON_YDL_OPTS)
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': client_types}}
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        break
+            except Exception as e:
+                last_error = e
+                continue
+                
+        if info:
+            st.session_state['info'] = info
+            st.session_state['formats'] = list_formats(info)
+        else:
+            st.error(f"Não foi possível carregar as informações do vídeo: {last_error}")
 
 # Exibição das opções de download se o vídeo tiver sido encontrado
 if st.session_state['info']:
@@ -348,7 +383,6 @@ if st.session_state['info']:
     formats = st.session_state['formats']
     
     with st.container(border=True):
-        # Grid de visualização: Thumbnail + Detalhes
         col_thumb, col_details = st.columns([1, 1.3])
         
         with col_thumb:
@@ -391,7 +425,7 @@ if st.session_state['info']:
             
             ffmpeg_installed = bool(shutil.which('ffmpeg'))
             if not ffmpeg_installed:
-                st.warning("⚠️ 'ffmpeg' não foi detectado no ambiente servidor. O download pode falhar caso precise mesclar áudio e vídeo separados.")
+                st.warning("⚠️ 'ffmpeg' não foi detectado no ambiente servidor. Certifique-se de incluir 'ffmpeg' no arquivo 'packages.txt'.")
 
             if st.button('Processar Download'):
                 st.session_state['file_data'] = None
@@ -435,14 +469,19 @@ if st.session_state['info']:
                             )
                         elif status_key == 'finished':
                             progress_bar.progress(100)
-                            status_text.caption('✨ Download concluído no servidor! Preparando transferência...')
+                            status_text.caption('✨ Download concluído no servidor! Preparando arquivo para seu dispositivo...')
                         elif status_key == 'error':
                             status_text.error('Erro durante o download.')
                     return hook
 
-                try:
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        out_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
+                download_success = False
+                last_error_msg = None
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    out_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
+                    
+                    # Sistema de retentativa inteligente com fallbacks contra HTTP 403 Forbidden do YouTube
+                    for client_types in CLIENT_FALLBACKS:
                         ydl_opts = {
                             'format': format_option,
                             'outtmpl': out_template,
@@ -451,11 +490,31 @@ if st.session_state['info']:
                             'prefer_ffmpeg': True,
                             'merge_output_format': merge_format,
                             'postprocessors': post_processors,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'geo_bypass': True,
+                            'nocheckcertificate': True,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': client_types
+                                }
+                            },
+                            'http_headers': COMMON_YDL_OPTS['http_headers']
                         }
 
-                        with YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([url])
+                        try:
+                            with YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([url])
+                            download_success = True
+                            break
+                        except Exception as e:
+                            last_error_msg = str(e)
+                            if '403' in last_error_msg or 'Forbidden' in last_error_msg:
+                                continue
+                            else:
+                                break
 
+                    if download_success:
                         downloaded_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
                         if downloaded_files:
                             target_file = downloaded_files[0]
@@ -470,10 +529,10 @@ if st.session_state['info']:
                             }
                             status_text.empty()
                             progress_bar.empty()
-                except Exception as e:
-                    status_text.empty()
-                    progress_bar.empty()
-                    st.error(f'Erro durante o processamento: {e}')
+                    else:
+                        status_text.empty()
+                        progress_bar.empty()
+                        st.error(f'Erro durante o processamento (Servidor YouTube): {last_error_msg}')
 
             # Botão de salvar no dispositivo (Web Client-Side Download)
             if st.session_state.get('file_data'):
