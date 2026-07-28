@@ -5,6 +5,7 @@ import ssl
 import shutil
 import time
 import tempfile
+from pathlib import Path
 try:
     import certifi
     os.environ.setdefault('SSL_CERT_FILE', certifi.where())
@@ -15,12 +16,13 @@ except Exception:
 
 from yt_dlp import YoutubeDL
 
-# Configurações padrão para contornar bloqueios do YouTube em IPs da Nuvem (Streamlit Cloud)
+# Configurações para contornar JS Challenges e bloqueios do YouTube
 COMMON_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'geo_bypass': True,
     'nocheckcertificate': True,
+    'remote_components': ['ejs:github'],
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -28,7 +30,9 @@ COMMON_YDL_OPTS = {
     }
 }
 
-# Lista de clientes do player do YouTube para contornar bloqueios de bots e formatos ausentes
+if shutil.which('node'):
+    COMMON_YDL_OPTS['js_runtimes'] = {'node': {'path': shutil.which('node')}}
+
 CLIENT_FALLBACKS = [
     ['ios', 'android'],
     ['android', 'ios'],
@@ -36,6 +40,8 @@ CLIENT_FALLBACKS = [
     ['tv_embedded'],
     ['web']
 ]
+
+BROWSERS_TO_TRY = ['chrome', 'safari', 'firefox', 'edge', 'brave']
 
 
 def human_size(bytes_num):
@@ -58,6 +64,18 @@ def format_duration(seconds):
     if hours > 0:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def get_default_download_folder():
+    """Retorna a pasta Downloads do usuário local."""
+    try:
+        user_home = Path.home()
+        downloads = user_home / "Downloads"
+        if downloads.exists():
+            return str(downloads)
+        return str(user_home)
+    except Exception:
+        return os.getcwd()
 
 
 def list_formats(info):
@@ -131,7 +149,7 @@ def list_formats(info):
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="YT Downloader — Minimalist",
+    page_title="YT Downloader — Local App",
     page_icon="⚡",
     layout="centered"
 )
@@ -153,18 +171,15 @@ st.markdown("""
     --apple-radius: 18px;
 }
 
-/* Fundo da aplicação */
 .stApp {
     background-color: var(--apple-bg) !important;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
 }
 
-/* Ocultar cabeçalho padrão */
 header[data-testid="stHeader"] {
     background: transparent !important;
 }
 
-/* Estilo do título principal */
 .app-header {
     text-align: center;
     padding: 24px 0 16px 0;
@@ -186,7 +201,6 @@ header[data-testid="stHeader"] {
     font-weight: 400;
 }
 
-/* Estilizar os containers principais como Cartões Apple */
 [data-testid="stMainBlockContainer"] [data-testid="stVerticalBlockBorderWrapper"] {
     background-color: var(--apple-card-bg) !important;
     border-radius: var(--apple-radius) !important;
@@ -196,7 +210,6 @@ header[data-testid="stHeader"] {
     margin-bottom: 20px !important;
 }
 
-/* Garantir que colunas internas não dupliquem bordas */
 [data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"],
 [data-testid="stColumn"] {
     background-color: transparent !important;
@@ -205,14 +218,12 @@ header[data-testid="stHeader"] {
     padding: 0 !important;
 }
 
-/* Rótulos dos inputs */
 div[data-testid="stMarkdownContainer"] p, label, .stWidgetLabel p {
     color: var(--apple-text-primary) !important;
     font-weight: 500 !important;
     font-size: 0.95rem !important;
 }
 
-/* Inputs de texto */
 div[data-baseweb="input"] {
     border-radius: 12px !important;
     border: 1px solid rgba(0, 0, 0, 0.12) !important;
@@ -229,7 +240,6 @@ div[data-baseweb="input"] input {
     font-size: 0.95rem !important;
 }
 
-/* Dropdown / Selectbox */
 div[data-baseweb="select"] > div {
     border-radius: 12px !important;
     background-color: #F5F5F7 !important;
@@ -237,12 +247,10 @@ div[data-baseweb="select"] > div {
     color: var(--apple-text-primary) !important;
 }
 
-/* Radio buttons */
 div[role="radiogroup"] {
     gap: 16px;
 }
 
-/* BOTÕES ESTILIZADOS COM TEXTO BRANCO GARANTIDO */
 div[data-testid="stButton"] > button,
 button[data-baseweb="button"],
 .stButton > button {
@@ -278,7 +286,6 @@ button[data-baseweb="button"] *,
     fill: #FFFFFF !important;
 }
 
-/* Video metadata styling */
 .video-preview-title {
     font-size: 1.15rem;
     font-weight: 600;
@@ -305,7 +312,6 @@ button[data-baseweb="button"] *,
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
-/* Barra de progresso personalizada */
 .stProgress > div > div > div > div {
     background-color: var(--apple-blue) !important;
     border-radius: 10px !important;
@@ -328,7 +334,7 @@ st.markdown("""
         </svg>
         YT Downloader
     </div>
-    <div class="app-subtitle">Baixe vídeos e áudios do YouTube com elegância e velocidade</div>
+    <div class="app-subtitle">Baixe vídeos e áudios do YouTube localmente com facilidade</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -338,45 +344,61 @@ if 'info' not in st.session_state:
     st.session_state['formats'] = []
 if 'last_url' not in st.session_state:
     st.session_state['last_url'] = ""
-if 'file_data' not in st.session_state:
-    st.session_state['file_data'] = None
 
 # Cartão de busca URL
 with st.container(border=True):
     url = st.text_input('Cole a URL do vídeo', placeholder='https://www.youtube.com/watch?v=...')
     get_btn = st.button('Buscar informações')
 
-# Lógica de extração de informações do vídeo
+# Extração de detalhes do vídeo
 if get_btn and url:
     if url != st.session_state['last_url']:
         st.session_state['info'] = None
         st.session_state['formats'] = []
         st.session_state['last_url'] = url
-        st.session_state['file_data'] = None
         
     with st.spinner('Obtendo detalhes do vídeo...'):
         info = None
         last_error = None
         
+        # 1ª Tentativa: Opções padrão e clientes variados
         for client_types in CLIENT_FALLBACKS:
             ydl_opts = dict(COMMON_YDL_OPTS)
+            ydl_opts['format'] = 'all'
             ydl_opts['extractor_args'] = {'youtube': {'player_client': client_types}}
             try:
                 with YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info:
+                    res = ydl.extract_info(url, download=False)
+                    if res and res.get('title'):
+                        info = res
                         break
             except Exception as e:
                 last_error = e
                 continue
                 
-        if info:
+        # 2ª Tentativa: Se o vídeo tiver restrição anti-bot/login, usa os cookies do navegador local automaticamente
+        if not info or not info.get('title'):
+            for b in BROWSERS_TO_TRY:
+                ydl_opts = dict(COMMON_YDL_OPTS)
+                ydl_opts['format'] = 'all'
+                ydl_opts['cookiesfrombrowser'] = (b,)
+                try:
+                    with YoutubeDL(ydl_opts) as ydl:
+                        res = ydl.extract_info(url, download=False)
+                        if res and res.get('title'):
+                            info = res
+                            break
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        if info and info.get('title'):
             st.session_state['info'] = info
             st.session_state['formats'] = list_formats(info)
         else:
             st.error(f"Não foi possível carregar as informações do vídeo: {last_error}")
 
-# Exibição das opções de download se o vídeo tiver sido encontrado
+# Exibição do painel de download
 if st.session_state['info']:
     info = st.session_state['info']
     formats = st.session_state['formats']
@@ -420,14 +442,16 @@ if st.session_state['info']:
                 horizontal=True
             )
 
+            default_download_dir = get_default_download_folder()
+            target_dir = st.text_input('Pasta de destino do arquivo', value=default_download_dir)
+
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
             
             ffmpeg_installed = bool(shutil.which('ffmpeg'))
             if not ffmpeg_installed:
-                st.warning("⚠️ 'ffmpeg' não foi detectado no ambiente servidor. Certifique-se de incluir 'ffmpeg' no arquivo 'packages.txt'.")
+                st.info("ℹ️ FFmpeg não encontrado no sistema. Para mesclar áudio e vídeo de alta qualidade (1080p+), o FFmpeg é necessário.")
 
-            if st.button('Processar Download'):
-                st.session_state['file_data'] = None
+            if st.button('Baixar agora'):
                 fmt_id = chosen['format_id']
                 acodec = chosen.get('codecs')
                 target_height = chosen.get('height') or 0
@@ -445,7 +469,6 @@ if st.session_state['info']:
                         'preferredcodec': 'wav',
                         'preferredquality': '192',
                     }]
-                    mime_type = "audio/wav"
                 else:
                     format_candidates = [
                         fmt_id,
@@ -455,7 +478,6 @@ if st.session_state['info']:
                     ]
                     merge_format = 'mp4'
                     post_processors = []
-                    mime_type = "video/mp4"
 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -477,7 +499,7 @@ if st.session_state['info']:
                             )
                         elif status_key == 'finished':
                             progress_bar.progress(100)
-                            status_text.caption('✨ Processamento concluído! Preparando arquivo...')
+                            status_text.caption('✨ Download concluído!')
                         elif status_key == 'error':
                             status_text.error('Erro durante o download.')
                     return hook
@@ -485,73 +507,73 @@ if st.session_state['info']:
                 download_success = False
                 last_error_msg = None
 
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    out_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
-                    
-                    for fmt_opt in format_candidates:
+                os.makedirs(target_dir, exist_ok=True)
+                out_template = os.path.join(target_dir, "%(title)s.%(ext)s")
+
+                # 1ª Tentativa: Alternando formatos e player clients
+                for fmt_opt in format_candidates:
+                    if download_success:
+                        break
+                    for client_types in CLIENT_FALLBACKS:
+                        ydl_opts = dict(COMMON_YDL_OPTS)
+                        ydl_opts.update({
+                            'format': fmt_opt,
+                            'outtmpl': out_template,
+                            'progress_hooks': [make_hook()],
+                            'noplaylist': True,
+                            'prefer_ffmpeg': True,
+                            'merge_output_format': merge_format,
+                            'postprocessors': post_processors,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': client_types
+                                }
+                            }
+                        })
+
+                        try:
+                            with YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([url])
+                            download_success = True
+                            break
+                        except Exception as e:
+                            last_error_msg = str(e)
+                            continue
+
+                # 2ª Tentativa: Se falhou por anti-bot/login, usa cookies dos navegadores instalados no sistema
+                if not download_success:
+                    for b in BROWSERS_TO_TRY:
                         if download_success:
                             break
-                        for client_types in CLIENT_FALLBACKS:
-                            ydl_opts = {
-                                'format': fmt_opt,
-                                'outtmpl': out_template,
-                                'progress_hooks': [make_hook()],
-                                'noplaylist': True,
-                                'prefer_ffmpeg': True,
-                                'merge_output_format': merge_format,
-                                'postprocessors': post_processors,
-                                'quiet': True,
-                                'no_warnings': True,
-                                'geo_bypass': True,
-                                'nocheckcertificate': True,
-                                'extractor_args': {
-                                    'youtube': {
-                                        'player_client': client_types
-                                    }
-                                },
-                                'http_headers': COMMON_YDL_OPTS['http_headers']
-                            }
+                        ydl_opts = dict(COMMON_YDL_OPTS)
+                        ydl_opts.update({
+                            'format': 'best',
+                            'outtmpl': out_template,
+                            'progress_hooks': [make_hook()],
+                            'noplaylist': True,
+                            'prefer_ffmpeg': True,
+                            'merge_output_format': merge_format,
+                            'postprocessors': post_processors,
+                            'cookiesfrombrowser': (b,)
+                        })
 
-                            try:
-                                with YoutubeDL(ydl_opts) as ydl:
-                                    ydl.download([url])
-                                download_success = True
-                                break
-                            except Exception as e:
-                                last_error_msg = str(e)
-                                continue
+                        try:
+                            with YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([url])
+                            download_success = True
+                            break
+                        except Exception as e:
+                            last_error_msg = str(e)
+                            continue
 
-                    if download_success:
-                        downloaded_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
-                        if downloaded_files:
-                            target_file = downloaded_files[0]
-                            file_name = os.path.basename(target_file)
-                            with open(target_file, "rb") as f:
-                                bytes_content = f.read()
-
-                            st.session_state['file_data'] = {
-                                'name': file_name,
-                                'bytes': bytes_content,
-                                'mime': mime_type
-                            }
-                            status_text.empty()
-                            progress_bar.empty()
-                    else:
-                        status_text.empty()
-                        progress_bar.empty()
-                        st.error(f'Erro durante o processamento (Servidor YouTube): {last_error_msg}')
-
-            # Botão de salvar no dispositivo (Web Client-Side Download)
-            if st.session_state.get('file_data'):
-                fdata = st.session_state['file_data']
-                st.success("✅ Arquivo pronto para download!")
-                st.download_button(
-                    label=f"📥 Clique aqui para salvar \"{fdata['name']}\"",
-                    data=fdata['bytes'],
-                    file_name=fdata['name'],
-                    mime=fdata['mime'],
-                    use_container_width=True
-                )
+                if download_success:
+                    status_text.empty()
+                    progress_bar.empty()
+                    st.success(f'✅ Download finalizado com sucesso! O arquivo foi salvo na pasta:\n`{target_dir}`')
+                else:
+                    status_text.empty()
+                    progress_bar.empty()
+                    st.error(f'Erro durante o download: {last_error_msg}')
 
         else:
             st.info('Nenhum formato de vídeo disponível foi encontrado para esta URL.')
